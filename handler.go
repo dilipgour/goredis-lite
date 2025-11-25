@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -18,6 +19,7 @@ var Handlers = map[string]func([]Value) Value{
 	"RPOP":    rpop,
 	"LRANGE":  lrange,
 	"LINDEX":  lindex,
+	"LINSERT": linsert,
 	"COMMAND": command,
 }
 
@@ -539,4 +541,73 @@ func lset(args []Value) Value {
 	// should never reach here
 	return Value{typ: "error", str: "Index not found"}
 
+}
+
+// LINSERT mylist BEFORE "World" "There"
+// [{bulk  0 mylist [] []} {bulk  0 BEFORE [] []} {bulk  0 World [] []} {bulk  0 There [] []}]
+func linsert(args []Value) Value {
+	if len(args) != 4 {
+		return Value{typ: "error", str: "ERR invalid number of arguments for 'linsert'"}
+	}
+
+	key := args[0].bulk
+	position := strings.ToUpper(args[1].bulk)
+	pivot := args[2].bulk
+	replace := args[3].bulk
+
+	// Fix logical condition
+	if position != "BEFORE" && position != "AFTER" {
+		return Value{typ: "error", str: "ERR syntax error"}
+	}
+
+	Listsmu.Lock()
+	defer Listsmu.Unlock()
+
+	ql, ok := LISTs[key]
+	if !ok {
+		return Value{typ: "null"} // Redis returns -1, but you can decide
+	}
+
+	node := ql.head
+
+	for node != nil {
+		for i := 0; i < len(node.values); i++ {
+
+			if node.values[i] == pivot {
+
+				insertIndex := i
+				if position == "AFTER" {
+					insertIndex = i + 1
+				}
+
+				// Insert element: move + shift
+				node.values = append(node.values, "") // grow
+				copy(node.values[insertIndex+1:], node.values[insertIndex:])
+				node.values[insertIndex] = replace
+
+				// Handle overflow
+				if len(node.values) > ql.maxNode {
+					last := node.values[len(node.values)-1]
+					node.values = node.values[:len(node.values)-1]
+
+					newNode := &Node{
+						values: []string{last},
+						next:   node.next,
+						prev:   node,
+					}
+
+					if node.next != nil {
+						node.next.prev = newNode
+					}
+
+					node.next = newNode
+				}
+
+				return Value{typ: "string", str: "OK"}
+			}
+		}
+		node = node.next
+	}
+
+	return Value{typ: "integer", num: -1} // same as real Redis
 }
